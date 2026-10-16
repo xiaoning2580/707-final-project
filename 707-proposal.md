@@ -12,7 +12,7 @@ We will use Set A of the PhysioNet/Computing in Cardiology Challenge 2012 datase
 
 Our cohort will consist of the 4,000 adult ICU stays in Set A. The source dataset excludes ICU stays shorter than 48 hours. We have downloaded and loaded the data and confirmed that the outcome and measurement records are available.
 
-The outcome will be In-hospital_death, coded as 1 for death during hospitalization and 0 for survival. We will make predictions using only information recorded during the first 48 hours. RecordID will be used for matching and splitting, not as a predictor. Length_of_stay and Survival will not be included as predictors.
+The outcome will be In-hospital_death, coded as 1 for death during hospitalization and 0 for survival. We will make predictions using only information recorded during the first 48 hours. RecordID will be used for matching and splitting, not as a predictor. Length_of_stay, Survival, SAPS-I, and SOFA will not be included as predictors.
 
 For each time-varying variable, we will summarize valid measurements within the observation window using the mean, minimum, and maximum. For the measurement-pattern feature set, we will count valid observations and create an indicator for whether the variable has no valid observations. The combined feature set will include both types of features. Values coded as −1 will be treated as missing.
 
@@ -24,7 +24,7 @@ Within the training set, we will use stratified five-fold cross-validation to se
 
 We will fit LASSO logistic regression and a random forest for each feature set. This provides one regularized model and one tree-based model while keeping the model classes consistent across comparisons. As a simple baseline, we will use logistic regression with age alone.
 
-After selecting model settings, we will fit the models on the full training set and evaluate them once on the held-out test set. We will report AUROC for discrimination and calibration plots and Brier scores for calibration and probability prediction accuracy. Our main comparison will be whether measurement patterns alone predict mortality and whether adding them to measurement values improves performance.
+After selecting model settings, we will fit the models on the full training set and evaluate them once on the held-out test set. We will report AUROC for discrimination and calibration plots and Brier scores for calibration and probability prediction accuracy. We will also report the differences in AUROC and Brier score between the combined and values-only models to assess the additional predictive value of measurement patterns.
 
 ## 4. Expected Findings and Limitations
 
