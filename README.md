@@ -56,3 +56,8 @@ The project proposal is available in [707-proposal.md](707-proposal.md).
 Silva I, Moody G, Scott DJ, Celi LA, Mark RG. Predicting In-Hospital Mortality of Patients in ICU: The PhysioNet/Computing in Cardiology Challenge 2012. *Computing in Cardiology*. 2012;39:245–248.
 
 Pollard T, Moody B, Lehman L, et al. PhysioNet as a global platform for biomedical research. *Nature Health*. 2026;1:792–795. https://doi.org/10.1038/s44360-026-00096-z
+
+## Data Preparation and Usage
+
+- [Data preparation and exploratory analysis](docs/data_preparation.md)
+- [Data reproduction and modeling handoff](docs/data_usage.md)

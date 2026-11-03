@@ -1,0 +1,19 @@
+{
+  "analysis_population": "training only",
+  "n_training_stays": 3200,
+  "n_survivors": 2757,
+  "n_deaths": 443,
+  "mortality_rate": 0.1384375,
+  "n_time_series_variables": 37,
+  "n_stays_without_any_valid_time_series": 3,
+  "n_all_missing_features": 0,
+  "n_constant_among_observed_features": 3,
+  "imputation_performed": false,
+  "features_modified": false,
+  "split_modified": false,
+  "n_figures": 5,
+  "figure_formats": [
+    "png",
+    "pdf"
+  ]
+}
