@@ -8,7 +8,7 @@ All four models used the same 3,200 training stays and 800 test stays. We matche
 
 ### Age-only baseline
 
-The baseline was logistic regression with an intercept and no penalty, using `Age` as its only predictor. Age was kept in years. We included a median imputer for missing ages, although there were no missing ages in the prepared data.
+The baseline was logistic regression with an intercept and no penalty, using `Age` as its only predictor. In scikit-learn 1.9 the unpenalized fit uses infinite `C`. Age was kept in years. We included a median imputer for missing ages, although there were no missing ages in the prepared data.
 
 ### LASSO models
 
@@ -20,7 +20,7 @@ We fitted a separate LASSO logistic regression for each of the three feature set
 | Patterns | Valid measurement counts and missingness indicators | 74 |
 | Combined | Both value summaries and measurement patterns | 185 |
 
-For each model, we used a pipeline containing median imputation, removal of constant columns, standardization, and logistic regression with an L1 penalty and an intercept. The imputer added no extra missingness indicators. Zero measurement counts were retained, and stays with all value features missing remained in the analysis.
+For each model, we used a pipeline containing median imputation, removal of constant columns, standardization, and logistic regression with an L1 penalty and an intercept. The L1 penalty uses `l1_ratio=1`. The imputer added no extra missingness indicators. Zero measurement counts were retained, and stays with all value features missing remained in the analysis.
 
 During cross-validation, each preprocessing step was fitted on the four fitting folds and applied to the remaining validation fold. This included the imputation medians, the choice of constant columns to remove, and the scaling parameters. We used the same procedure for all three feature sets.
 
@@ -30,7 +30,7 @@ After selecting C, we refitted each full pipeline on all 3,200 training stays. W
 
 ## Cross-validation Results
 
-All three LASSO models selected `C=0.1`. The table shows mean five-fold validation AUROC within the training set. Full results for all candidate values are saved in [lasso_cv_results.csv](../results/tables/regularized_models/lasso_cv_results.csv).
+All three LASSO models selected `C=0.1` when refit in the environment below. The table shows mean five-fold validation AUROC within the training set. These selected means match the earlier scikit-learn 1.6.1 fit at the precision shown here. Full results for all candidate values are saved in [lasso_cv_results.csv](../results/tables/regularized_models/lasso_cv_results.csv).
 
 | Feature set | Selected C | Mean five-fold validation AUROC |
 |-------------|-----------:|-------------------------------:|
@@ -40,16 +40,16 @@ All three LASSO models selected `C=0.1`. The table shows mean five-fold validati
 
 ## Running the Models
 
-First prepare the local data by following the [data usage guide](data_usage.md). From the repository root, run the tuning step followed by the final fitting and prediction step.
+First prepare the local data by following the [data usage guide](data_usage.md). From the repository root, run the tuning step followed by the final fitting and prediction step in the `biostat707-handoff` environment:
 
 ```bash
-python scripts/11_train_regularized_models.py --tune-lasso
-python scripts/11_train_regularized_models.py --predict-test
+conda run -n biostat707-handoff python scripts/11_train_regularized_models.py --tune-lasso
+conda run -n biostat707-handoff python scripts/11_train_regularized_models.py --predict-test
 ```
 
 The second command reads the selected C values from the tuning table. All models must use the same `split_assignments.csv`, including the random-forest models.
 
-The saved results were produced with Python 3.13.5 and scikit-learn 1.6.1. The versions currently listed in `requirements.txt` differ from this environment, including scikit-learn 1.9.1, numpy 2.4.6, and pandas 3.1.0. Use the recorded environment when reproducing these results.
+These results were produced with Python 3.11.18. The seven modeling packages are pinned in `requirements-modeling.txt`: numpy 2.4.6, pandas 3.1.0, scikit-learn 1.9.1, scipy 1.17.1, matplotlib 3.11.2, and joblib 1.6.0. The existing `requirements.txt` is unchanged.
 
 ## Prediction Files
 
@@ -62,6 +62,6 @@ The prediction command saves four files in `data/predictions/`.
 | `lasso_patterns.csv` | LASSO using measurement patterns |
 | `lasso_combined.csv` | LASSO using both feature types |
 
-Each file contains `RecordID` and `predicted_probability`. All four files were checked to cover the same 800 unique test IDs, with finite probabilities between 0 and 1. The evaluation code should join these predictions to `data/processed/outcomes.csv` by `RecordID` to calculate test performance.
+Each file contains `RecordID` and `predicted_probability`. All four files were checked to cover the same 800 unique test IDs, with finite probabilities between 0 and 1. These files are the Python 3.11.18 refit and should replace any earlier prediction files shared for evaluation. The evaluation code should join these predictions to `data/processed/outcomes.csv` by `RecordID` to calculate test performance.
 
 The `data/` directory is ignored by Git, so the prediction files need to be shared separately with the group member responsible for evaluation.
