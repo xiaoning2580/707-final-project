@@ -1,0 +1,4 @@
+model,n_train,n_test,n_input_features,n_model_features,prediction_sha256
+rf_values,3200,800,111,108,c8c54b3d66b549f80b6c4620e77d35f909d924303d7f3bc25ede350366772e0a
+rf_patterns,3200,800,74,74,4cf5ee646970441410aee8d2773e3e1d17fbcb0175a5de0c49a22af33423ca4c
+rf_combined,3200,800,185,182,188dd48c303463cd965f0045ac03b128e3ebef64419e28f41ce89aa199a0cc2a

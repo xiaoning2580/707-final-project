@@ -40,16 +40,16 @@ All three LASSO models selected `C=0.1` when refit in the environment below. The
 
 ## Running the Models
 
-First prepare the local data by following the [data usage guide](data_usage.md). From the repository root, run the tuning step followed by the final fitting and prediction step in the `biostat707-handoff` environment:
+First prepare the local data by following the [data usage guide](data_usage.md). From the repository root, run the tuning step followed by the final fitting and prediction step after activating the [shared environment](environment.md):
 
 ```bash
-conda run -n biostat707-handoff python scripts/11_train_regularized_models.py --tune-lasso
-conda run -n biostat707-handoff python scripts/11_train_regularized_models.py --predict-test
+python scripts/11_train_regularized_models.py --tune-lasso
+python scripts/11_train_regularized_models.py --predict-test
 ```
 
 The second command reads the selected C values from the tuning table. All models must use the same `split_assignments.csv`, including the random-forest models.
 
-These results were produced with Python 3.11.18. The seven modeling packages are pinned in `requirements-modeling.txt`: numpy 2.4.6, pandas 3.1.0, scikit-learn 1.9.1, scipy 1.17.1, matplotlib 3.11.2, and joblib 1.6.0. The existing `requirements.txt` is unchanged.
+These results were produced with Python 3.11.18. The six main analysis packages and their supporting dependencies are pinned in the shared [requirements.txt](../requirements.txt). See the [environment guide](environment.md) for versions and installation.
 
 ## Prediction Files
 

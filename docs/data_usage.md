@@ -14,23 +14,9 @@ The working directory should be the directory containing:
 - data/
 - README.md
 
-Use the team's agreed Python environment.
-
-The preparation and EDA scripts require:
-
-- numpy
-- pandas
-- scikit-learn
-- matplotlib
-
-If these packages are not already installed:
-
-```bash
-python -m pip install numpy pandas scikit-learn matplotlib
-```
-
-For exact reproducibility, the team should record and use the same
-package versions. This installation command alone does not pin versions.
+Set up and activate the [shared environment](environment.md) before running
+these commands. All project scripts use Python 3.11.18 and the single pinned
+[requirements.txt](../requirements.txt) in the repository root.
 
 ## 2. Download the Source Data
 

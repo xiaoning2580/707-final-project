@@ -1,0 +1,59 @@
+{
+  "selected_parameters": {
+    "values": {
+      "model__max_depth": null,
+      "model__max_features": "sqrt",
+      "model__min_samples_leaf": 10
+    },
+    "patterns": {
+      "model__max_depth": 8,
+      "model__max_features": "sqrt",
+      "model__min_samples_leaf": 2
+    },
+    "combined": {
+      "model__max_depth": null,
+      "model__max_features": "sqrt",
+      "model__min_samples_leaf": 10
+    }
+  },
+  "fixed_parameters": {
+    "n_estimators": 300,
+    "random_state": 707,
+    "class_weight": null
+  },
+  "selection": "Highest mean shared-five-fold AUROC; first grid candidate in an exact tie.",
+  "grid": {
+    "model__max_depth": [
+      8,
+      null
+    ],
+    "model__min_samples_leaf": [
+      10,
+      2
+    ],
+    "model__max_features": [
+      "sqrt",
+      0.5
+    ]
+  },
+  "input_sha256": {
+    "split_assignments.csv": "96ce6b957987236e0d3ede0e8b475190cc340b4762447e9d22906ad188110828",
+    "outcomes.csv": "1933dab0774491a99346767f3140dab27034cd9ebb606e9bd4fe8c926f40cd54",
+    "feature_sets.json": "ede48a1c3dc938ad406580500558071ca7a25f95d026b3f2f9975ce3190bf4ed",
+    "preparation_manifest.json": "94e09b487e1932531cc98d359b598624fb71cc631d4cddc9e0c964739ba0a5f6",
+    "features_values.csv": "d9706bed35d3341a496302fb0b2f1b74e12f5a90eee97b61f249c8460847e24e",
+    "features_patterns.csv": "9b660d6edbcda7b8823bfd0db65bbb01eae8d999d88ba6a164fb09d06d1d7fa5",
+    "features_combined.csv": "99833855e31c0a339612e7e136ea86e09b2ab90bd69310b48bc7e0c210dfbf8c"
+  },
+  "environment": {
+    "python": "3.11.18",
+    "platform": "macOS-26.5-arm64-arm-64bit",
+    "numpy": "2.4.6",
+    "pandas": "3.1.0",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.1",
+    "matplotlib": "3.11.2",
+    "joblib": "1.6.0",
+    "threadpoolctl": "3.7.0"
+  }
+}
