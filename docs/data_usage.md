@@ -1,3 +1,10 @@
+> **Current modeling version: COMMON_COVARIATES_V2.**
+> Use inputs under `data/processed/common_covariates_v2/`.
+> See [the revised modeling handoff](modeling_handoff_v2.md) for
+> feature definitions, preprocessing conventions, and reproduction.
+> The parent-directory feature tables described below are intermediate
+> measurement-only outputs.
+
 # Data Reproduction and Modeling Handoff
 
 This guide explains how to reproduce the prepared data and use the

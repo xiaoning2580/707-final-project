@@ -1,3 +1,53 @@
+## Current Analysis Version: COMMON_COVARIATES_V2
+
+Following project feedback, all three main feature sets now include
+Age, Gender, and ICUType as common covariates.
+
+The current modeling inputs are located in:
+
+    data/processed/common_covariates_v2/
+
+| Feature set | Contents | Predictors before categorical encoding |
+|-------------|----------|---------------------------------------:|
+| Values | Age, Gender, ICUType + measurement mean/min/max | 114 |
+| Patterns | Age, Gender, ICUType + valid-record counts and missingness indicators | 77 |
+| Combined | Age, Gender, ICUType + all measurement features | 188 |
+
+RecordID is excluded from predictor counts. Common covariates appear
+only once in Combined.
+
+The measurement-only tables in data/processed/ are retained as
+intermediate outputs and inputs to the original training EDA.
+They are no longer the inputs for the revised main models.
+
+### Validation of the Revision
+
+The revision retained all 4,000 ICU stays and preserved the original
+measurement features. CSV round-trip validation used a numerical
+tolerance of 1e-12.
+
+The baseline, outcome, and split-assignment files were copied
+byte-for-byte from the original preparation outputs.
+
+The original 80/20 training/test split and five training-set
+cross-validation folds were stratified by In-hospital_death.
+No split or fold assignment was regenerated during this revision.
+
+Training-set common-covariate missingness:
+
+| Variable | Missing stays |
+|----------|--------------:|
+| Age | 0 |
+| Gender | 3 |
+| ICUType | 0 |
+
+No imputation, standardization, or categorical encoding was performed
+during this revision.
+
+The revised comparison evaluates the predictive information in
+measurement values and recording patterns when all feature sets
+also contain the same admission covariates.
+
 # Data Preparation and Exploratory Analysis
 
 Prepared by: Yixuan Liu

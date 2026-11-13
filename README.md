@@ -61,3 +61,4 @@ Pollard T, Moody B, Lehman L, et al. PhysioNet as a global platform for biomedic
 
 - [Data preparation and exploratory analysis](docs/data_preparation.md)
 - [Data reproduction and modeling handoff](docs/data_usage.md)
+- [Revised modeling inputs and handoff](docs/modeling_handoff_v2.md)
