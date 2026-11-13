@@ -221,3 +221,9 @@ __marimo__/
 
 # Project data
 data/
+
+# Local data and Python-generated files
+*.py[cod]
+.ipynb_checkpoints/
+.DS_Store
+.venv/
