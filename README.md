@@ -6,9 +6,9 @@ Our project will examine how much information about in-hospital mortality comes 
 
 Using the first 48 hours of ICU data, we will compare three feature sets:
 
-1. Measurement values only.
-2. Measurement counts and missingness indicators only.
-3. Measurement values, counts, and missingness indicators together.
+1. Age, Gender, and ICUType plus measurement values.
+2. The same common covariates plus measurement counts and missingness indicators.
+3. The same common covariates plus both measurement feature types.
 
 We will evaluate discrimination and calibration and discuss whether differences in hospital measurement practices could affect model performance.
 
@@ -49,6 +49,7 @@ Analysis guides:
 
 - [Data preparation and EDA](docs/data_preparation.md)
 - [Data inputs and handoff](docs/data_usage.md)
+- [Revised V2 modeling inputs](docs/modeling_handoff_v2.md)
 - [Age baseline and LASSO](docs/regularized_models.md)
 - [Random forests](docs/random_forests.md)
 
@@ -66,7 +67,7 @@ The `data/` directory is excluded from version control through `.gitignore`. Eac
 
 We will examine the data distributions and missingness, then compare the three feature sets using LASSO logistic regression and a random forest. An age-only logistic regression model will serve as a simple baseline.
 
-We will use a stratified training/test split and cross-validation within the training set. Imputation and standardization will be fitted using training data only. Model evaluation will include AUROC, calibration plots, and Brier scores. We will discuss limitations, including whether differences in hospital measurement practices could affect model performance.
+We use the shared 80/20 training/test split and five training folds, both stratified by in-hospital death. Imputation and standardization will be fitted using training data only. Model evaluation will include AUROC, calibration plots, and Brier scores. We will discuss limitations, including whether differences in hospital measurement practices could affect model performance.
 
 ## Proposal
 

@@ -1,19 +1,18 @@
 """Train regularized in-hospital mortality models.
 
+Inputs are COMMON_COVARIATES_V2 tables in data/processed/common_covariates_v2/.
+The feature-set widths below are column counts before categorical encoding.
+
 Run from the repository root:
-    python scripts/11_train_regularized_models.py
-    python scripts/11_train_regularized_models.py --check-values-lasso
+
     python scripts/11_train_regularized_models.py --tune-lasso
     python scripts/11_train_regularized_models.py --predict-test
 
-The default entry point fits the age-only baseline on training folds
-2-5 and checks one probability per stay in training fold 1.
-The values check runs L1 logistic regression for C=0.1 and C=1
-on the shared training folds. It does not select the final penalty.
-The tuning entry selects one C for each LASSO feature set from the
-fixed training-fold grid. It does not refit on all training rows.
-The prediction entry refits the age baseline and three LASSO models on
-all training stays and writes test-set probabilities.
+--tune-lasso selects one C for each LASSO feature set on the shared
+training folds and writes the tuning table. It does not refit on all
+training rows. --predict-test reads those selected penalties, refits the
+age baseline and three LASSO models on all training stays, and writes
+test-set probabilities. With no arguments, the script prints this usage.
 """
 
 from pathlib import Path
@@ -25,20 +24,27 @@ import warnings
 import numpy as np
 import pandas as pd
 import sklearn
+from sklearn.compose import ColumnTransformer
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROCESSED = ROOT / "data" / "processed"
+FEATURE_VERSION = "COMMON_COVARIATES_V2"
+PROCESSED = ROOT / "data" / "processed" / "common_covariates_v2"
 LASSO_TUNING_TABLE = (
-    ROOT / "results" / "tables" / "regularized_models" / "lasso_cv_results.csv"
+    ROOT
+    / "results"
+    / "tables"
+    / "regularized_models"
+    / "common_covariates_v2"
+    / "lasso_cv_results.csv"
 )
-PREDICTION_DIR = ROOT / "data" / "predictions"
+PREDICTION_DIR = ROOT / "data" / "predictions" / "common_covariates_v2"
 PREDICTION_FILES = {
     "age_only": PREDICTION_DIR / "age_only.csv",
     "values": PREDICTION_DIR / "lasso_values.csv",
@@ -49,15 +55,10 @@ PREDICTION_FILES = {
 AGE_PREDICTORS = ["Age"]
 OUTCOME = "In-hospital_death"
 POSITIVE_CLASS = 1
-VALUES_LASSO_SOLVER = "saga"
-VALUES_LASSO_RANDOM_STATE = 707
-# scikit-learn 1.6.1 defaults to 100 iterations. Every values-fold fit
-# reached that cap. A cap of 5000 covered the observed counts, at most 3740.
-VALUES_LASSO_MAX_ITER = 5000
-VALUES_LASSO_CHECK_C = [0.1, 1.0]
+LASSO_SOLVER = "saga"
+LASSO_RANDOM_STATE = 707
 LASSO_TUNE_C = [0.001, 0.01, 0.1, 1.0, 10.0]
-# max_iter=5000 left ConvergenceWarning on values C=10 (3 folds) and
-# combined C=10 (4 folds). Those fits reached convergence by 6959 iterations.
+# C=10 did not converge at max_iter=5000, so tuning and final fits use 20000.
 LASSO_TUNE_MAX_ITER = 20000
 LASSO_FEATURE_SETS = ("values", "patterns", "combined")
 FEATURE_SET_FILES = {
@@ -65,14 +66,21 @@ FEATURE_SET_FILES = {
     "patterns": "features_patterns.csv",
     "combined": "features_combined.csv",
 }
-FEATURE_SET_WIDTHS = {"values": 111, "patterns": 74, "combined": 185}
-# Mean validation AUROC from Python 3.13.5 and scikit-learn 1.6.1.
-# These values are reported for cross-version comparison. An exact match
-# is not required. Fold IDs, finite scores, and the five-fold mean are
-# still checked.
-VALUES_REFERENCE_MEAN_AUROC = {
-    0.1: "0.8179274444",
-    1.0: "0.8094112613",
+COMMON_COVARIATES = ["Age", "Gender", "ICUType"]
+# Predictor counts before one-hot encoding. RecordID is not included.
+FEATURE_SET_WIDTHS = {"values": 114, "patterns": 77, "combined": 188}
+N_MEASUREMENT_VALUES = 111
+N_MEASUREMENT_PATTERNS = 74
+EXCLUDED_COLUMNS = {
+    "RecordID",
+    OUTCOME,
+    "split",
+    "cv_fold",
+    "Height",
+    "SAPS-I",
+    "SOFA",
+    "Length_of_stay",
+    "Survival",
 }
 
 
@@ -116,8 +124,32 @@ def require_same_record_ids(tables):
         )
 
 
+def require_input_version():
+    """Reject any feature directory other than COMMON_COVARIATES_V2."""
+    feature_path = PROCESSED / "feature_sets.json"
+    manifest_path = PROCESSED / "preparation_manifest.json"
+    require(feature_path.is_file(), f"Missing feature metadata: {feature_path}.")
+    require(manifest_path.is_file(), f"Missing preparation manifest: {manifest_path}.")
+    feature_sets = json.loads(feature_path.read_text())
+    manifest = json.loads(manifest_path.read_text())
+    found_schema = feature_sets.get("schema_version") if isinstance(feature_sets, dict) else None
+    require(
+        found_schema == FEATURE_VERSION,
+        "feature_sets.json schema_version must be "
+        f"{FEATURE_VERSION}, found {found_schema!r}.",
+    )
+    found_manifest = manifest.get("feature_schema_version")
+    require(
+        found_manifest == FEATURE_VERSION,
+        "preparation_manifest.json feature_schema_version must be "
+        f"{FEATURE_VERSION}, found {found_manifest!r}.",
+    )
+    return feature_sets
+
+
 def load_aligned_inputs():
     """Align baseline, outcome, and split rows by RecordID without a join."""
+    require_input_version()
     tables = {
         "outcomes": read_indexed_table(
             PROCESSED / "outcomes.csv", [OUTCOME]
@@ -216,241 +248,112 @@ def training_rows(frame):
     return training
 
 
-def run_age_baseline_fold_check(frame):
-    training = training_rows(frame)
-    fit_frame = training.loc[training["cv_fold"].isin([2, 3, 4, 5])]
-    validation_frame = training.loc[training["cv_fold"].eq(1)]
-    fit_ids = set(fit_frame.index)
-    validation_ids = set(validation_frame.index)
+def category_codes(values):
+    """Map category codes to stable strings and missing values to Missing."""
 
-    require(fit_ids.isdisjoint(validation_ids), "Fit and validation IDs overlap.")
-    require(
-        len(fit_frame) + len(validation_frame) == len(training),
-        "Fit and validation folds do not cover the training set.",
-    )
-    fit_deaths = int(fit_frame[OUTCOME].sum())
-    validation_deaths = int(validation_frame[OUTCOME].sum())
-    require(len(fit_frame) == 2560, f"Expected 2560 fit rows, found {len(fit_frame)}.")
-    require(fit_deaths == 355, f"Expected 355 fit deaths, found {fit_deaths}.")
-    require(
-        len(validation_frame) == 640,
-        f"Expected 640 validation rows, found {len(validation_frame)}.",
-    )
-    require(
-        validation_deaths == 88,
-        f"Expected 88 validation deaths, found {validation_deaths}.",
-    )
+    def label(value):
+        if pd.isna(value):
+            return "Missing"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            text = str(value).strip()
+            if text == "" or text.lower() in {"nan", "none", "<na>"}:
+                return "Missing"
+            return text
+        if np.isfinite(number) and float(number).is_integer():
+            return str(int(number))
+        text = str(value).strip()
+        return "Missing" if text == "" else text
 
-    fit_features = fit_frame.loc[:, AGE_PREDICTORS]
-    validation_features = validation_frame.loc[:, AGE_PREDICTORS]
-    require(list(fit_features.columns) == ["Age"], "Age baseline predictors are not ['Age'].")
-    require(
-        list(validation_features.columns) == ["Age"],
-        "Validation predictors are not ['Age'].",
-    )
-
-    pipeline = make_age_baseline()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        pipeline.fit(fit_features, fit_frame[OUTCOME])
-        probabilities = death_probabilities(pipeline, validation_features)
-        warning_messages = [
-            f"{item.category.__name__}: {item.message}" for item in caught
-        ]
-
-    require(
-        probabilities.index.equals(validation_frame.index),
-        "Probability IDs differ from the validation IDs.",
-    )
-    values = probabilities.to_numpy(dtype=float)
-    require(len(values) == 640, f"Expected 640 probabilities, found {len(values)}.")
-    require(np.isfinite(values).all(), "Validation probability is not finite.")
-    require(
-        ((values >= 0) & (values <= 1)).all(),
-        "Validation probability is outside [0, 1].",
-    )
-
-    model = pipeline.named_steps["model"]
-    imputer = pipeline.named_steps["imputer"]
-    require(np.isinf(model.C), "Age baseline C is not infinite.")
-    require(model.l1_ratio == 0, "Age baseline l1_ratio is not 0.")
-    require(len(imputer.statistics_) == 1, "Age imputer did not learn one median.")
-
-    return {
-        "n_fit": len(fit_frame),
-        "fit_deaths": fit_deaths,
-        "n_validation": len(validation_frame),
-        "validation_deaths": validation_deaths,
-        "n_intersection": len(fit_ids & validation_ids),
-        "fit_age_missing": int(fit_features["Age"].isna().sum()),
-        "validation_age_missing": int(validation_features["Age"].isna().sum()),
-        "learned_age_median": float(imputer.statistics_[0]),
-        "predictors": list(fit_features.columns),
-        "l1_ratio": model.l1_ratio,
-        "C": model.C,
-        "solver": model.solver,
-        "fit_intercept": bool(model.fit_intercept),
-        "classes": [int(label) for label in model.classes_],
-        "probability_min": float(values.min()),
-        "probability_max": float(values.max()),
-        "warnings": warning_messages,
-    }
+    return pd.DataFrame(values).map(label).to_numpy(dtype=object)
 
 
-def feature_predictors(feature_set):
-    feature_sets = json.loads((PROCESSED / "feature_sets.json").read_text())
-    predictors = feature_sets[feature_set]
-    expected = FEATURE_SET_WIDTHS[feature_set]
-    require(
-        isinstance(predictors, list) and len(predictors) == expected,
-        f"feature_sets.json {feature_set} must contain {expected} columns, "
-        f"found {len(predictors)}.",
-    )
-    require(
-        len(predictors) == len(set(predictors)),
-        f"feature_sets.json repeats a {feature_set} predictor.",
-    )
-    forbidden = {"RecordID", OUTCOME, "split", "cv_fold", *AGE_PREDICTORS}
-    require(
-        forbidden.isdisjoint(predictors),
-        f"{feature_set} predictors include an identifier, outcome, split, or age column.",
-    )
-    return predictors
-
-
-def value_predictors():
-    return feature_predictors("values")
-
-
-def load_values_training():
-    """Align value features to outcomes and splits, then keep training stays."""
-    predictors = value_predictors()
-    tables = {
-        "outcomes": read_indexed_table(PROCESSED / "outcomes.csv", [OUTCOME]),
-        "splits": read_indexed_table(
-            PROCESSED / "split_assignments.csv", ["split", "cv_fold"]
-        ),
-        "values": read_indexed_table(
-            PROCESSED / "features_values.csv", predictors
-        ),
-    }
-    require_same_record_ids(tables)
-    require(
-        list(tables["values"].columns) == predictors,
-        "features_values.csv columns differ from feature_sets.json values.",
-    )
-
-    ordered_ids = tables["outcomes"].index
-    outcome = pd.to_numeric(tables["outcomes"][OUTCOME], errors="raise")
-    require(outcome.isin([0, 1]).all(), "In-hospital_death must be 0 or 1.")
-    aligned = pd.DataFrame(
-        {
-            OUTCOME: outcome.astype(int),
-            "split": tables["splits"].loc[ordered_ids, "split"],
-            "cv_fold": tables["splits"].loc[ordered_ids, "cv_fold"],
-        },
-        index=ordered_ids,
-    )
-    aligned.index.name = "RecordID"
-    training = training_rows(aligned).sort_index()
-    require(len(training) == 3200, f"Expected 3200 training stays, found {len(training)}.")
-
-    features = tables["values"].loc[training.index, predictors]
-    require(
-        features.index.equals(training.index),
-        "Value-feature rows are not aligned with training outcomes and folds.",
-    )
-    require(features.shape == (3200, 111), f"Unexpected values matrix shape {features.shape}.")
-    return features, training
-
-
-def make_lasso_pipeline(max_iter=VALUES_LASSO_MAX_ITER):
-    """Return the shared LASSO pipeline.
-
-    Median imputation keeps all-missing columns, without missingness
-    indicators. VarianceThreshold then removes those constant columns, and
-    the same fitted support is used at prediction. Standardization and the
-    L1 model are inside the pipeline so each CV fit learns them only on its
-    own fitting rows. All three feature sets use this same sequence.
-
-    scikit-learn 1.9 deprecates penalty='l1'. l1_ratio=1 is the pure L1
-    penalty, with the penalty argument left unset.
-    """
-    return Pipeline(
-        steps=[
+def lasso_preprocessor(numeric_columns, categorical_columns):
+    """Median-impute numeric columns and one-hot encode categorical columns."""
+    return ColumnTransformer(
+        transformers=[
             (
-                "imputer",
+                "numeric",
                 SimpleImputer(
                     strategy="median",
                     add_indicator=False,
                     keep_empty_features=True,
                 ),
+                list(numeric_columns),
             ),
+            (
+                "categorical",
+                Pipeline(
+                    steps=[
+                        (
+                            "codes",
+                            FunctionTransformer(
+                                category_codes,
+                                feature_names_out="one-to-one",
+                                validate=False,
+                                check_inverse=False,
+                            ),
+                        ),
+                        (
+                            "one_hot",
+                            OneHotEncoder(
+                                drop=None,
+                                handle_unknown="ignore",
+                                sparse_output=False,
+                            ),
+                        ),
+                    ]
+                ),
+                list(categorical_columns),
+            ),
+        ],
+        remainder="drop",
+        verbose_feature_names_out=False,
+    )
+
+
+def make_lasso_pipeline(feature_set, max_iter=LASSO_TUNE_MAX_ITER):
+    """Return the L1 logistic pipeline for one feature set.
+
+    Numeric columns, including Age and the measurement features, are
+    median-imputed from the rows used to fit the pipeline. Gender and ICUType
+    are string-coded, with missing values mapped to Missing, then one-hot
+    encoded. After the branches are joined, constant columns are removed and
+    every remaining column is standardized, including one-hot columns.
+
+    scikit-learn 1.9 deprecates penalty='l1'. l1_ratio=1 is the pure L1
+    penalty, with the penalty argument left unset.
+    """
+    columns = load_feature_spec()["sets"][feature_set]
+    numeric_columns = columns["numeric_columns"]
+    categorical_columns = columns["categorical_columns"]
+    require(
+        categorical_columns == ["Gender", "ICUType"],
+        f"{feature_set} categorical columns are {categorical_columns}.",
+    )
+    require("Age" in numeric_columns, f"{feature_set} numeric columns do not include Age.")
+    require(
+        set(numeric_columns).isdisjoint(categorical_columns),
+        f"{feature_set} sends a column through both preprocessing branches.",
+    )
+    return Pipeline(
+        steps=[
+            ("preprocess", lasso_preprocessor(numeric_columns, categorical_columns)),
             ("constant_filter", VarianceThreshold(threshold=0.0)),
             ("scaler", StandardScaler()),
             (
                 "model",
                 LogisticRegression(
                     l1_ratio=1.0,
-                    solver=VALUES_LASSO_SOLVER,
+                    solver=LASSO_SOLVER,
                     fit_intercept=True,
-                    random_state=VALUES_LASSO_RANDOM_STATE,
+                    random_state=LASSO_RANDOM_STATE,
                     max_iter=max_iter,
                 ),
             ),
         ]
     )
-
-
-def make_values_lasso():
-    """Return the values LASSO pipeline at the validated iteration cap."""
-    return make_lasso_pipeline()
-
-
-def require_empty_columns_are_removed():
-    """Confirm this sklearn version keeps, then drops, an all-missing column."""
-    pipeline = make_values_lasso()
-    imputer = pipeline.named_steps["imputer"]
-    constant_filter = pipeline.named_steps["constant_filter"]
-    require(imputer.add_indicator is False, "Missingness indicators are enabled.")
-    require(
-        imputer.keep_empty_features is True,
-        "Imputer would drop all-missing columns before the constant filter.",
-    )
-    sample = pd.DataFrame(
-        {
-            "observed": [0.0, 1.0, 0.0, 1.0],
-            "constant": [5.0, 5.0, 5.0, 5.0],
-            "empty": [np.nan, np.nan, np.nan, np.nan],
-        }
-    )
-    preprocessor = Pipeline(pipeline.steps[:-1])
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        transformed = preprocessor.fit_transform(sample)
-        imputed = imputer.transform(sample)
-        follow_up = preprocessor.transform(
-            pd.DataFrame(
-                {
-                    "observed": [2.0, 3.0],
-                    "constant": [5.0, 5.0],
-                    "empty": [np.nan, np.nan],
-                }
-            )
-        )
-    require(not caught, f"Empty-column check emitted warnings: {caught}.")
-    require(imputed.shape == (4, 3), "Imputer did not keep the all-missing column.")
-    require(
-        np.all(imputed[:, 2] == 0),
-        "All-missing column was not replaced by one constant.",
-    )
-    require(
-        np.array_equal(constant_filter.get_support(), [True, False, False]),
-        "Constant filter did not remove the empty and constant columns.",
-    )
-    require(transformed.shape == (4, 1), "Scaler did not use the filtered columns.")
-    require(follow_up.shape == (2, 1), "Prediction did not reuse the fitted columns.")
-    require(np.isfinite(transformed).all() and np.isfinite(follow_up).all(), "Non-finite scaled values.")
 
 
 def predefined_training_split(training):
@@ -482,157 +385,24 @@ def require_predefined_folds_match(features, training, splitter):
             f"Fold {project_fold} does not cover the training IDs.",
         )
         seen.extend(record_ids[validation_index])
-        print(
-            f"Project fold {project_fold}: validation IDs match "
-            f"split_assignments.csv ({len(validation_ids)} IDs)"
-        )
     require(
         len(seen) == len(set(seen)) == len(training),
         "Training records do not each appear in exactly one validation fold.",
     )
-    print("Each training RecordID appears in exactly one validation fold.")
-
-
-def run_values_lasso_check():
-    features, training = load_values_training()
-    print(f"Values predictors: {features.shape[1]}")
-    print(f"Training matrix: {features.shape[0]} x {features.shape[1]}")
-    print(
-        "Training rows with all value features missing: "
-        f"{int(features.isna().all(axis=1).sum())}"
-    )
-    for project_fold in range(1, 6):
-        fitting_rows = features.loc[training["cv_fold"].ne(project_fold)]
-        empty_columns = int(fitting_rows.isna().all(axis=0).sum())
-        print(
-            f"Fitting rows for validation fold {project_fold}: "
-            f"all-missing columns={empty_columns}"
-        )
-
-    require_empty_columns_are_removed()
-    print("Empty-column handling: passed on scikit-learn", sklearn.__version__)
-
-    splitter = predefined_training_split(training)
-    require_predefined_folds_match(features, training, splitter)
-
-    estimator = make_values_lasso()
-    model = estimator.named_steps["model"]
-    require(model.l1_ratio == 1, "Values LASSO l1_ratio is not 1.")
-    print(
-        "L1 setting: "
-        f"l1_ratio={model.l1_ratio}, solver={model.solver!r}, "
-        f"fit_intercept={bool(model.fit_intercept)}, "
-        f"random_state={model.random_state}, max_iter={model.max_iter}"
-    )
-    search = GridSearchCV(
-        estimator=estimator,
-        param_grid={"model__C": VALUES_LASSO_CHECK_C},
-        scoring="roc_auc",
-        cv=splitter,
-        refit=False,
-        error_score="raise",
-        n_jobs=1,
-    )
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        search.fit(features, training[OUTCOME].to_numpy(dtype=int))
-        warning_messages = [
-            f"{item.category.__name__}: {item.message}" for item in caught
-        ]
-
-    results = search.cv_results_
-    require(len(results["params"]) == len(VALUES_LASSO_CHECK_C), "Unexpected candidate count.")
-    compared = []
-    for row, params in enumerate(results["params"]):
-        scores = [float(results[f"split{fold}_test_score"][row]) for fold in range(5)]
-        mean_score = float(results["mean_test_score"][row])
-        require(np.isfinite(scores).all(), f"Non-finite AUROC for C={params['model__C']}.")
-        require(np.isfinite(mean_score), f"Non-finite mean AUROC for C={params['model__C']}.")
-        require(
-            np.isclose(mean_score, float(np.mean(scores))),
-            f"Mean AUROC does not match the five folds for C={params['model__C']}.",
-        )
-        formatted = ", ".join(f"{score:.10f}" for score in scores)
-        print(f"C={params['model__C']}: fold AUROC [{formatted}]")
-        print(f"C={params['model__C']}: mean AUROC {mean_score:.10f}")
-        compared.append({"C": float(params["model__C"]), "mean_auroc": mean_score})
-
-    print(f"Warnings: {len(warning_messages)}")
-    for message in warning_messages:
-        print(message)
-    require(not warning_messages, "Values LASSO check emitted warnings.")
-    report_values_cross_version(compared)
-
-
-def training_labels():
-    """Return the sorted training labels shared by every LASSO feature set."""
-    tables = {
-        "outcomes": read_indexed_table(PROCESSED / "outcomes.csv", [OUTCOME]),
-        "splits": read_indexed_table(
-            PROCESSED / "split_assignments.csv", ["split", "cv_fold"]
-        ),
-    }
-    require_same_record_ids(tables)
-    ordered_ids = tables["outcomes"].index
-    outcome = pd.to_numeric(tables["outcomes"][OUTCOME], errors="raise")
-    require(outcome.isin([0, 1]).all(), "In-hospital_death must be 0 or 1.")
-    aligned = pd.DataFrame(
-        {
-            OUTCOME: outcome.astype(int),
-            "split": tables["splits"].loc[ordered_ids, "split"],
-            "cv_fold": tables["splits"].loc[ordered_ids, "cv_fold"],
-        },
-        index=ordered_ids,
-    )
-    aligned.index.name = "RecordID"
-    training = training_rows(aligned).sort_index()
-    require(len(training) == 3200, f"Expected 3200 training stays, found {len(training)}.")
-    require(
-        training.index.is_monotonic_increasing,
-        "Training RecordID order is not sorted.",
-    )
-    return training
+    print("Training fold IDs match split_assignments.csv.")
 
 
 def load_lasso_training_matrices():
     """Align all three feature sets to the same sorted training rows."""
-    training = training_labels()
-    tables = {
-        "outcomes": read_indexed_table(PROCESSED / "outcomes.csv", [OUTCOME]),
+    training, _test, train_features, _test_features = load_train_and_test()
+    matrices = {
+        feature_set: train_features[feature_set] for feature_set in LASSO_FEATURE_SETS
     }
-    predictors = {}
-    for feature_set in LASSO_FEATURE_SETS:
-        predictors[feature_set] = feature_predictors(feature_set)
-        path = PROCESSED / FEATURE_SET_FILES[feature_set]
-        frame = read_indexed_table(path, predictors[feature_set])
-        require(
-            list(frame.columns) == predictors[feature_set],
-            f"{path.name} columns differ from feature_sets.json {feature_set}.",
-        )
-        tables[feature_set] = frame
-    require_same_record_ids(tables)
-
-    matrices = {}
-    for feature_set in LASSO_FEATURE_SETS:
-        path = PROCESSED / FEATURE_SET_FILES[feature_set]
-        features = tables[feature_set].loc[training.index, predictors[feature_set]]
-        require(
-            features.index.equals(training.index),
-            f"{path.name} rows are not aligned with the training RecordID order.",
-        )
-        expected_shape = (3200, FEATURE_SET_WIDTHS[feature_set])
-        require(
-            features.shape == expected_shape,
-            f"{path.name} training matrix is {features.shape}, expected {expected_shape}.",
-        )
-        matrices[feature_set] = features
     for feature_set, features in matrices.items():
         require(
             features.index.equals(matrices["values"].index),
             f"{feature_set} training row order differs from values.",
         )
-    require_pattern_coding(matrices["patterns"])
-    require_combined_matches(matrices)
     return matrices, training
 
 
@@ -643,34 +413,13 @@ def column_mismatches(left, right):
     return int(missing_disagreement.sum()), int(value_disagreement.sum())
 
 
-def require_combined_matches(matrices):
-    value_columns = list(matrices["values"].columns)
-    pattern_columns = list(matrices["patterns"].columns)
-    combined_columns = list(matrices["combined"].columns)
+def require_same_series(left, right, label):
+    missing_disagreement, value_disagreement = column_mismatches(left, right)
     require(
-        set(value_columns).isdisjoint(pattern_columns),
-        "Value and pattern predictor names overlap.",
+        missing_disagreement == 0 and value_disagreement == 0,
+        f"{label}: {missing_disagreement} missingness differences, "
+        f"{value_disagreement} value differences.",
     )
-    require(
-        combined_columns == value_columns + pattern_columns,
-        "features_combined.csv columns are not values followed by patterns.",
-    )
-    comparisons = (
-        ("values", "features_values.csv", value_columns),
-        ("patterns", "features_patterns.csv", pattern_columns),
-    )
-    for feature_set, file_name, columns in comparisons:
-        for column in columns:
-            left = matrices["combined"][column]
-            right = matrices[feature_set][column]
-            missing_disagreement, value_disagreement = column_mismatches(left, right)
-            require(
-                missing_disagreement == 0 and value_disagreement == 0,
-                "features_combined.csv does not match "
-                f"{file_name} in column {column}: "
-                f"{missing_disagreement} missingness differences, "
-                f"{value_disagreement} value differences.",
-            )
 
 
 def pattern_pairs(columns):
@@ -702,7 +451,10 @@ def pattern_pairs(columns):
 
 
 def require_pattern_coding(patterns):
-    """Keep zero counts, and require missing indicators to follow those counts."""
+    """Check the 74 measurement-pattern columns.
+
+    Common covariates are omitted. They may contain the agreed missing values.
+    """
     failures = []
     zero_counts = 0
     for count_name, missing_name in pattern_pairs(list(patterns.columns)):
@@ -753,7 +505,7 @@ def require_pattern_coding(patterns):
 
 def score_lasso_candidate(features, outcome, splitter, feature_set, c_value, max_iter):
     search = GridSearchCV(
-        estimator=make_lasso_pipeline(max_iter),
+        estimator=make_lasso_pipeline(feature_set, max_iter),
         param_grid={"model__C": [c_value]},
         scoring="roc_auc",
         cv=splitter,
@@ -803,30 +555,6 @@ def choose_c(rows):
     best_mean = max(row["mean_auroc"] for row in rows)
     tied = [row for row in rows if row["mean_auroc"] == best_mean]
     return min(tied, key=lambda row: row["C"])
-
-
-def report_values_cross_version(rows):
-    """Report values AUROC against the scikit-learn 1.6.1 reference.
-
-    A numerical difference does not stop the check or the tuning run.
-    """
-    for c_value, expected in VALUES_REFERENCE_MEAN_AUROC.items():
-        matches = [row for row in rows if row["C"] == c_value]
-        require(len(matches) == 1, f"Values grid is missing C={c_value}.")
-        observed = float(matches[0]["mean_auroc"])
-        reference = float(expected)
-        rendered = f"{observed:.10f}"
-        difference = observed - reference
-        status = (
-            "matches at 10 decimals"
-            if rendered == expected
-            else "differs at 10 decimals"
-        )
-        print(
-            f"Values cross-version C={c_value}: mean AUROC {rendered} "
-            f"(sklearn 1.6.1 reference {expected}, "
-            f"difference {difference:+.3g}, {status})"
-        )
 
 
 def tuning_table(rows, choices):
@@ -913,19 +641,21 @@ def verify_saved_tuning_table(path, choices):
 
 
 def run_lasso_tuning():
+    print(f"Feature version: {FEATURE_VERSION}")
+    print(f"Inputs: {PROCESSED}")
+    print(f"Tuning output: {LASSO_TUNING_TABLE}")
     matrices, training = load_lasso_training_matrices()
     for feature_set in LASSO_FEATURE_SETS:
+        pipeline = make_lasso_pipeline(feature_set)
         print(
             f"{feature_set} training matrix: "
-            f"{matrices[feature_set].shape[0]} x {matrices[feature_set].shape[1]}"
+            f"{matrices[feature_set].shape[0]} x {matrices[feature_set].shape[1]}; "
+            "CV estimator steps: "
+            + ", ".join(name for name, _step in pipeline.steps)
         )
-    print(
-        "Training rows with all value features missing: "
-        f"{int(matrices['values'].isna().all(axis=1).sum())}"
-    )
     splitter = predefined_training_split(training)
     require_predefined_folds_match(matrices["values"], training, splitter)
-    model = make_lasso_pipeline(LASSO_TUNE_MAX_ITER).named_steps["model"]
+    model = make_lasso_pipeline("values").named_steps["model"]
     require(model.l1_ratio == 1, "LASSO tuning l1_ratio is not 1.")
     print(
         "L1 setting: "
@@ -961,9 +691,6 @@ def run_lasso_tuning():
         not affected,
         "Unsolved fit warnings remain. C was not selected and no tuning table was written.",
     )
-
-    value_rows = [row for row in rows if row["feature_set"] == "values"]
-    report_values_cross_version(value_rows)
 
     choices = {}
     boundary = {LASSO_TUNE_C[0], LASSO_TUNE_C[-1]}
@@ -1052,68 +779,253 @@ def read_selected_penalties(path=LASSO_TUNING_TABLE):
     return penalties
 
 
-def load_train_and_test():
-    """Align age and LASSO inputs, then split them without dropping stays."""
-    cohort = load_aligned_inputs().sort_index()
+def load_feature_spec():
+    """Read predictor, numeric, and categorical columns for each feature set."""
+    payload = require_input_version()
+    require(payload.get("id_column") == "RecordID", "feature_sets.json id_column must be RecordID.")
+    require(
+        payload.get("common_covariates") == COMMON_COVARIATES,
+        "feature_sets.json common covariates must be Age, Gender, and ICUType.",
+    )
+    require(
+        payload.get("categorical_features") == ["Gender", "ICUType"],
+        "feature_sets.json categorical features must be Gender and ICUType.",
+    )
+    groups = payload.get("feature_sets")
+    require(
+        isinstance(groups, dict) and set(groups) == set(LASSO_FEATURE_SETS),
+        "feature_sets.json must contain values, patterns, and combined.",
+    )
+
+    spec = {}
+    for feature_set in LASSO_FEATURE_SETS:
+        block = groups[feature_set]
+        require(isinstance(block, dict), f"feature_sets.json {feature_set} must be an object.")
+        columns = block.get("columns")
+        numeric = block.get("numeric_columns")
+        categorical = block.get("categorical_columns")
+        expected = FEATURE_SET_WIDTHS[feature_set]
+        require(
+            isinstance(columns, list) and len(columns) == expected,
+            f"{feature_set} must list {expected} columns before encoding, "
+            f"found {len(columns) if isinstance(columns, list) else columns!r}.",
+        )
+        require(len(columns) == len(set(columns)), f"feature_sets.json repeats a {feature_set} predictor.")
+        require(
+            isinstance(numeric, list) and isinstance(categorical, list),
+            f"{feature_set} numeric_columns and categorical_columns must be lists.",
+        )
+        require(set(numeric).isdisjoint(categorical), f"{feature_set} numeric and categorical columns overlap.")
+        require(
+            set(numeric) | set(categorical) == set(columns),
+            f"{feature_set} numeric and categorical columns must cover every predictor.",
+        )
+        require(categorical == ["Gender", "ICUType"], f"{feature_set} categorical columns must be Gender and ICUType.")
+        require("Age" in numeric and "Age" not in categorical, f"{feature_set} must keep Age in numeric_columns.")
+        excluded = EXCLUDED_COLUMNS.intersection(columns)
+        require(not excluded, f"{feature_set} includes excluded columns: {sorted(excluded)}.")
+        require(
+            columns[:3] == COMMON_COVARIATES,
+            f"{feature_set} columns must start with Age, Gender, and ICUType.",
+        )
+        spec[feature_set] = {
+            "columns": columns,
+            "numeric_columns": numeric,
+            "categorical_columns": categorical,
+        }
+
+    value_measurements = [column for column in spec["values"]["numeric_columns"] if column != "Age"]
+    pattern_measurements = [column for column in spec["patterns"]["numeric_columns"] if column != "Age"]
+    require(
+        len(value_measurements) == N_MEASUREMENT_VALUES,
+        f"Expected {N_MEASUREMENT_VALUES} measurement value columns, found {len(value_measurements)}.",
+    )
+    require(
+        len(pattern_measurements) == N_MEASUREMENT_PATTERNS,
+        f"Expected {N_MEASUREMENT_PATTERNS} measurement pattern columns, found {len(pattern_measurements)}.",
+    )
+    require(
+        set(value_measurements).isdisjoint(pattern_measurements),
+        "Measurement value and pattern column names overlap.",
+    )
+    require(
+        set(value_measurements).isdisjoint(COMMON_COVARIATES),
+        "Measurement value columns include a common covariate.",
+    )
+    require(
+        set(pattern_measurements).isdisjoint(COMMON_COVARIATES),
+        "Measurement pattern columns include a common covariate.",
+    )
+    require(
+        spec["values"]["columns"] == COMMON_COVARIATES + value_measurements,
+        "Values columns are not the common covariates followed by measurement values.",
+    )
+    require(
+        spec["patterns"]["columns"] == COMMON_COVARIATES + pattern_measurements,
+        "Patterns columns are not the common covariates followed by measurement patterns.",
+    )
+    require(
+        spec["combined"]["columns"] == COMMON_COVARIATES + value_measurements + pattern_measurements,
+        "Combined columns repeat a common covariate or omit a measurement column.",
+    )
+    require(
+        spec["combined"]["numeric_columns"] == ["Age", *value_measurements, *pattern_measurements],
+        "Combined numeric columns do not match Age and the measurement columns.",
+    )
+    return {
+        "sets": spec,
+        "measurement_value_columns": value_measurements,
+        "measurement_pattern_columns": pattern_measurements,
+    }
+
+
+def require_v2_feature_consistency(matrices, cohort, spec):
+    """Check common covariates, measurement patterns, and retained empty rows once."""
+    value_columns = spec["measurement_value_columns"]
+    pattern_columns = spec["measurement_pattern_columns"]
+    for feature_set in ("patterns", "combined"):
+        for column in COMMON_COVARIATES:
+            require_same_series(
+                matrices["values"][column],
+                matrices[feature_set][column],
+                f"{feature_set} {column} differs from values",
+            )
+    for column in value_columns:
+        require_same_series(
+            matrices["combined"][column],
+            matrices["values"][column],
+            f"Combined measurement column {column} differs from values",
+        )
+    for column in pattern_columns:
+        require_same_series(
+            matrices["combined"][column],
+            matrices["patterns"][column],
+            f"Combined measurement column {column} differs from patterns",
+        )
+    combined_columns = list(matrices["combined"].columns)
+    require(
+        combined_columns == COMMON_COVARIATES + value_columns + pattern_columns,
+        "Combined columns are not common covariates plus measurement columns.",
+    )
+    require(
+        all(combined_columns.count(column) == 1 for column in COMMON_COVARIATES),
+        "Combined repeats a common covariate.",
+    )
+    require_same_series(
+        cohort.loc[matrices["values"].index, "Age"],
+        matrices["values"]["Age"],
+        "baseline.csv Age differs from the values Age column",
+    )
+    require_pattern_coding(matrices["patterns"].loc[:, pattern_columns])
+
     training = training_rows(cohort)
-    test = cohort.loc[cohort["split"].eq("test")].copy()
+    test = cohort.loc[cohort["split"].eq("test")]
     require(len(training) == 3200, f"Expected 3200 training stays, found {len(training)}.")
     require(len(test) == 800, f"Expected 800 test stays, found {len(test)}.")
-    require(
-        set(training.index).isdisjoint(test.index),
-        "Training and test RecordID sets overlap.",
-    )
+    require(set(training.index).isdisjoint(test.index), "Training and test RecordID sets overlap.")
     require(
         len(training) + len(test) == len(cohort),
         "Training and test rows do not cover the aligned cohort.",
     )
-    splits = read_indexed_table(
-        PROCESSED / "split_assignments.csv", ["split", "cv_fold"]
-    )
-    expected_test_ids = set(splits.index[splits["split"].eq("test")])
+    require(test["cv_fold"].isna().all(), "Test stays have a training fold number.")
+    fold_counts = training["cv_fold"].value_counts()
     require(
-        set(test.index) == expected_test_ids,
-        "Test IDs differ from split_assignments.csv.",
+        set(fold_counts.index) == {1, 2, 3, 4, 5} and bool(fold_counts.eq(640).all()),
+        f"Training folds are not five groups of 640: {fold_counts.to_dict()}.",
     )
+    training_common = matrices["values"].loc[training.index, COMMON_COVARIATES]
+    gender = pd.to_numeric(training_common["Gender"], errors="raise")
+    icu_type = pd.to_numeric(training_common["ICUType"], errors="raise")
+    require(int(training_common["Age"].isna().sum()) == 0, "Training Age contains missing values.")
+    require(int(gender.isna().sum()) == 3, f"Training Gender has {int(gender.isna().sum())} missing values, expected 3.")
+    require(int(icu_type.isna().sum()) == 0, "Training ICUType contains missing values.")
+    require(
+        set(gender.dropna().unique()).issubset({0, 1}),
+        f"Training Gender codes are {sorted(gender.dropna().unique().tolist())}.",
+    )
+    require(
+        set(icu_type.dropna().unique()).issubset({1, 2, 3, 4}),
+        f"Training ICUType codes are {sorted(icu_type.dropna().unique().tolist())}.",
+    )
+    measurement = matrices["values"].loc[training.index, value_columns]
+    empty_ids = measurement.index[measurement.isna().all(axis=1).to_numpy()]
+    require(
+        len(empty_ids) == 3,
+        "Expected 3 training stays with all 111 measurement values missing, "
+        f"found {len(empty_ids)}.",
+    )
+    for feature_set in LASSO_FEATURE_SETS:
+        require(
+            empty_ids.isin(matrices[feature_set].index).all(),
+            f"All-missing measurement stays are absent from {feature_set}.",
+        )
+    print(f"Training rows with all 111 measurement values missing: {len(empty_ids)} (retained)")
+
+
+def load_feature_matrices():
+    """Align the three V2 feature tables to one RecordID order and check them once."""
+    cohort = load_aligned_inputs().sort_index()
+    spec = load_feature_spec()
+    tables = {"cohort": cohort}
+    for feature_set in LASSO_FEATURE_SETS:
+        columns = spec["sets"][feature_set]["columns"]
+        path = PROCESSED / FEATURE_SET_FILES[feature_set]
+        frame = read_indexed_table(path, columns)
+        require(
+            list(frame.columns) == columns,
+            f"{path.name} columns differ from feature_sets.json {feature_set}.",
+        )
+        tables[feature_set] = frame
+    require_same_record_ids(tables)
+
+    matrices = {}
+    for feature_set in LASSO_FEATURE_SETS:
+        columns = spec["sets"][feature_set]["columns"]
+        path = PROCESSED / FEATURE_SET_FILES[feature_set]
+        features = tables[feature_set].loc[cohort.index, columns]
+        require(
+            features.index.equals(cohort.index),
+            f"{path.name} rows are not aligned with the cohort RecordID order.",
+        )
+        require(len(features) == len(cohort), f"{path.name} alignment changed the number of stays.")
+        matrices[feature_set] = features
+    require_v2_feature_consistency(matrices, cohort, spec)
+    return cohort, matrices, spec
+
+
+def load_train_and_test():
+    """Align age and LASSO inputs, then split them without dropping stays."""
+    cohort, matrices, _spec = load_feature_matrices()
+    training = training_rows(cohort)
+    test = cohort.loc[cohort["split"].eq("test")].copy()
+    require(training.index.is_monotonic_increasing, "Training RecordID order is not sorted.")
+    require(test.index.is_monotonic_increasing, "Test RecordID order is not sorted.")
+    require(len(training) == 3200, f"Expected 3200 training stays, found {len(training)}.")
+    require(len(test) == 800, f"Expected 800 test stays, found {len(test)}.")
 
     train_features = {"age_only": training.loc[:, AGE_PREDICTORS]}
     test_features = {"age_only": test.loc[:, AGE_PREDICTORS]}
-    require(
-        list(train_features["age_only"].columns) == ["Age"],
-        "Age baseline predictors are not ['Age'].",
-    )
+    require(list(train_features["age_only"].columns) == ["Age"], "Age baseline predictors are not ['Age'].")
+    require(list(test_features["age_only"].columns) == ["Age"], "Age baseline predictors are not ['Age'].")
     for feature_set in LASSO_FEATURE_SETS:
-        predictors = feature_predictors(feature_set)
-        path = PROCESSED / FEATURE_SET_FILES[feature_set]
-        frame = read_indexed_table(path, predictors)
-        require(
-            list(frame.columns) == predictors,
-            f"{path.name} columns differ from feature_sets.json {feature_set}.",
-        )
-        missing = len(set(cohort.index) - set(frame.index))
-        extra = len(set(frame.index) - set(cohort.index))
-        require(
-            missing == 0 and extra == 0,
-            f"{path.name} RecordID set differs from the aligned cohort: "
-            f"{missing} missing, {extra} extra.",
-        )
-        train_matrix = frame.loc[training.index, predictors]
-        test_matrix = frame.loc[test.index, predictors]
+        train_matrix = matrices[feature_set].loc[training.index]
+        test_matrix = matrices[feature_set].loc[test.index]
+        width = FEATURE_SET_WIDTHS[feature_set]
         require(
             train_matrix.index.equals(training.index),
-            f"{path.name} training rows are not aligned by RecordID.",
+            f"{feature_set} training rows are not aligned by RecordID.",
         )
         require(
             test_matrix.index.equals(test.index),
-            f"{path.name} test rows are not aligned by RecordID.",
+            f"{feature_set} test rows are not aligned by RecordID.",
         )
         require(
-            train_matrix.shape == (3200, FEATURE_SET_WIDTHS[feature_set]),
-            f"{path.name} training matrix is {train_matrix.shape}.",
+            train_matrix.shape == (3200, width),
+            f"{feature_set} training matrix is {train_matrix.shape}, expected (3200, {width}) before encoding.",
         )
         require(
-            test_matrix.shape == (800, FEATURE_SET_WIDTHS[feature_set]),
-            f"{path.name} test matrix is {test_matrix.shape}.",
+            test_matrix.shape == (800, width),
+            f"{feature_set} test matrix is {test_matrix.shape}, expected (800, {width}) before encoding.",
         )
         train_features[feature_set] = train_matrix
         test_features[feature_set] = test_matrix
@@ -1229,6 +1141,10 @@ def verify_saved_prediction(path, probabilities, test_ids):
 
 
 def run_test_predictions():
+    print(f"Feature version: {FEATURE_VERSION}")
+    print(f"Inputs: {PROCESSED}")
+    print(f"Tuning table: {LASSO_TUNING_TABLE}")
+    print(f"Prediction output: {PREDICTION_DIR}")
     penalties = read_selected_penalties()
     training, test, train_features, test_features = load_train_and_test()
     outcome = training[OUTCOME].to_numpy(dtype=int)
@@ -1239,7 +1155,7 @@ def run_test_predictions():
     fitted["age_only"] = age_pipeline
 
     for feature_set in LASSO_FEATURE_SETS:
-        pipeline = make_lasso_pipeline(LASSO_TUNE_MAX_ITER)
+        pipeline = make_lasso_pipeline(feature_set)
         pipeline.set_params(model__C=penalties[feature_set])
         require(
             pipeline.named_steps["model"].C == penalties[feature_set],
@@ -1268,6 +1184,16 @@ def run_test_predictions():
             PREDICTION_FILES[name], probabilities, test.index
         )
         model = fitted[name].named_steps["model"]
+        n_iter = int(np.max(model.n_iter_))
+        if name == "age_only":
+            encoded = filtered = int(model.n_features_in_)
+        else:
+            encoded = len(fitted[name].named_steps["preprocess"].get_feature_names_out())
+            filtered = int(fitted[name].named_steps["constant_filter"].get_support().sum())
+            require(
+                filtered == int(model.n_features_in_),
+                f"{name} model saw {model.n_features_in_} columns after filtering {filtered}.",
+            )
         penalty = "not applicable" if name == "age_only" else penalties[name]
         values = probabilities.to_numpy(dtype=float)
         summaries.append(
@@ -1275,7 +1201,10 @@ def run_test_predictions():
                 "model": PREDICTION_FILES[name].stem,
                 "n_fit": len(train_features[name]),
                 "n_predictors": int(train_features[name].shape[1]),
+                "encoded_columns": encoded,
+                "filtered_columns": filtered,
                 "C": penalty,
+                "n_iter": n_iter,
                 "n_predicted": len(probabilities),
                 "min_probability": float(values.min()),
                 "max_probability": float(values.max()),
@@ -1286,7 +1215,9 @@ def run_test_predictions():
         print(
             f"{summaries[-1]['model']}: "
             f"fit={summaries[-1]['n_fit']}, predictors={summaries[-1]['n_predictors']}, "
-            f"C={summaries[-1]['C']}, predicted={summaries[-1]['n_predicted']}, "
+            f"encoded={encoded}, filtered={filtered}, "
+            f"C={summaries[-1]['C']}, n_iter={n_iter}, "
+            f"predicted={summaries[-1]['n_predicted']}, "
             f"range=[{values.min():.10f}, {values.max():.10f}], "
             f"warnings=0, max_reread_abs_diff={max_difference:.3g}"
         )
@@ -1295,13 +1226,19 @@ def run_test_predictions():
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--check-values-lasso",
-        action="store_true",
-        help="Run the two-candidate values LASSO check on the shared training folds.",
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fit COMMON_COVARIATES_V2 age and LASSO mortality models "
+            "on the shared training split."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python scripts/11_train_regularized_models.py --tune-lasso\n"
+            "  python scripts/11_train_regularized_models.py --predict-test"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--tune-lasso",
         action="store_true",
@@ -1313,40 +1250,14 @@ def main():
         help="Refit selected models on all training stays and write test probabilities.",
     )
     args = parser.parse_args()
+    if not args.tune_lasso and not args.predict_test:
+        parser.print_help()
+        return
     print(f"scikit-learn {sklearn.__version__}")
     if args.tune_lasso:
         run_lasso_tuning()
         return
-    if args.check_values_lasso:
-        run_values_lasso_check()
-        return
-    if args.predict_test:
-        run_test_predictions()
-        return
-    result = run_age_baseline_fold_check(load_aligned_inputs())
-    print(f"Predictors: {result['predictors']}")
-    print(f"Fit stays: {result['n_fit']}; deaths: {result['fit_deaths']}")
-    print(
-        "Validation stays: "
-        f"{result['n_validation']}; deaths: {result['validation_deaths']}"
-    )
-    print(f"Fit/validation ID intersection: {result['n_intersection']}")
-    print(f"Missing age in fit: {result['fit_age_missing']}")
-    print(f"Missing age in validation: {result['validation_age_missing']}")
-    print(f"Learned age median (years): {result['learned_age_median']}")
-    print(
-        "Penalty setting: "
-        f"no penalty (C={result['C']}, l1_ratio={result['l1_ratio']}), "
-        f"solver={result['solver']!r}, fit_intercept={result['fit_intercept']}"
-    )
-    print(f"classes_: {result['classes']}")
-    print(
-        "Validation probability range: "
-        f"[{result['probability_min']:.10f}, {result['probability_max']:.10f}]"
-    )
-    print(f"Warnings: {len(result['warnings'])}")
-    for message in result["warnings"]:
-        print(message)
+    run_test_predictions()
 
 
 if __name__ == "__main__":

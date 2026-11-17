@@ -12,15 +12,18 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from sklearn.pipeline import Pipeline
 
+from rf_preprocessing import make_preprocessor
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PROCESSED = ROOT / "data/processed"
-RESULTS = ROOT / "results/tables/random_forests"
-FEATURE_SETS = {"values": 111, "patterns": 74, "combined": 185}
+FEATURE_VERSION = "COMMON_COVARIATES_V2"
+PROCESSED = ROOT / "data/processed/common_covariates_v2"
+RESULTS = ROOT / "results/tables/random_forests/common_covariates_v2"
+FEATURE_SETS = {"values": 114, "patterns": 77, "combined": 188}
+COMMON = ["Age", "Gender", "ICUType"]
 GRID = {
     "model__max_depth": [8, None],
     "model__min_samples_leaf": [10, 2],
@@ -67,19 +70,28 @@ def load_inputs():
     manifest = json.loads((PROCESSED / "preparation_manifest.json").read_text())
     assert manifest["blood_pressure_rule_version"] == "BP_RULE_B_V1"
     schema = json.loads((PROCESSED / "feature_sets.json").read_text())
+    assert manifest["feature_schema_version"] == schema["schema_version"] == FEATURE_VERSION
     features = {}
     for name, width in FEATURE_SETS.items():
         frame = read_table(f"features_{name}.csv")
         assert frame.index.is_unique and set(frame.index) == set(splits.index)
-        assert list(frame.columns) == schema[name] and len(frame.columns) == width
+        spec = schema["feature_sets"][name]
+        assert list(frame.columns) == spec["columns"] and len(frame.columns) == width
+        assert spec["categorical_columns"] == ["Gender", "ICUType"]
+        assert spec["numeric_columns"] == [c for c in frame if c not in spec["categorical_columns"]]
+        assert frame.columns.is_unique and all(c in frame for c in COMMON)
+        assert frame["Gender"].dropna().isin([0, 1]).all()
+        assert frame["ICUType"].dropna().isin([1, 2, 3, 4]).all()
         assert not set(frame.columns) & {"RecordID", "split", "cv_fold", "In-hospital_death"}
         assert not np.isinf(frame.to_numpy(dtype=float)).any()
         features[name] = frame
-    assert features["patterns"].notna().all().all()
+    assert features["patterns"].drop(columns=COMMON).notna().all().all()
     assert (features["patterns"].filter(like="_count") >= 0).all().all()
     assert features["patterns"].filter(like="_missing").isin([0, 1]).all().all()
+    pd.testing.assert_frame_equal(features["values"][COMMON], features["patterns"][COMMON])
     pd.testing.assert_frame_equal(
-        features["combined"], pd.concat([features["values"], features["patterns"]], axis=1)
+        features["combined"],
+        pd.concat([features["values"], features["patterns"].drop(columns=COMMON)], axis=1),
     )
     cv = PredefinedSplit(folds.to_numpy() - 1)  # (3200,): project folds 1-5 become 0-4.
     for fold, (fit_rows, validation_rows) in enumerate(cv.split(), start=1):
@@ -89,10 +101,10 @@ def load_inputs():
     return features, train_ids, test_ids, y_train, cv
 
 
-def make_pipeline():
+def make_pipeline(name):
+    spec = json.loads((PROCESSED / "feature_sets.json").read_text())["feature_sets"][name]
     return Pipeline([
-        ("imputer", SimpleImputer(strategy="median", add_indicator=False,
-                                  keep_empty_features=True)),
+        ("preprocess", make_preprocessor(spec["numeric_columns"], spec["categorical_columns"])),
         ("constant_filter", VarianceThreshold()),
         ("model", RandomForestClassifier(n_estimators=300, random_state=707,
                                           class_weight=None, n_jobs=1)),
@@ -105,7 +117,7 @@ def tune(features, train_ids, y_train, cv, jobs):
     tables = []
     for name in FEATURE_SETS:
         print(f"Tuning {name}: 8 parameter combinations x 5 folds.", flush=True)
-        search = GridSearchCV(make_pipeline(), GRID, scoring="roc_auc", cv=cv,
+        search = GridSearchCV(make_pipeline(name), GRID, scoring="roc_auc", cv=cv,
                               n_jobs=jobs, refit=False, error_score="raise")
         with joblib.parallel_config(backend="loky", inner_max_num_threads=1):
             search.fit(features[name].loc[train_ids], y_train)
@@ -129,6 +141,10 @@ def tune(features, train_ids, y_train, cv, jobs):
         print(f"Selected {name}: {selected[name]}, mean CV AUROC={row_score(result, best):.6f}", flush=True)
     pd.concat(tables, ignore_index=True).to_csv(RESULTS / "rf_cv_results.csv", index=False)
     metadata = {
+        "feature_version": FEATURE_VERSION,
+        "preprocessing": {"numeric": "training-fold median, no added indicators",
+                          "categorical": "Missing label; one-hot, drop=None, handle_unknown=ignore",
+                          "constant_filter": True, "standardization": False},
         "selected_parameters": selected,
         "fixed_parameters": {"n_estimators": 300, "random_state": 707, "class_weight": None},
         "selection": "Highest mean shared-five-fold AUROC; first grid candidate in an exact tie.",
@@ -145,17 +161,18 @@ def row_score(results, index):
 
 def predict_test(features, train_ids, test_ids, y_train, jobs):
     metadata = json.loads((RESULTS / "rf_selection.json").read_text())
+    assert metadata["feature_version"] == FEATURE_VERSION
     assert metadata["input_sha256"] == input_hashes(), "Inputs changed after tuning."
     current = environment_versions()
     assert all(current[name] == value for name, value in metadata["environment"].items()
                if name != "platform"), "Modeling environment changed after tuning."
-    output = ROOT / "data/predictions"
-    model_dir = ROOT / "data/models"
+    output = ROOT / "data/predictions/common_covariates_v2"
+    model_dir = ROOT / "data/models/common_covariates_v2"
     output.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
     checks = []
     for name in FEATURE_SETS:
-        pipeline = make_pipeline().set_params(**metadata["selected_parameters"][name])
+        pipeline = make_pipeline(name).set_params(**metadata["selected_parameters"][name])
         pipeline.set_params(model__n_jobs=jobs)
         pipeline.fit(features[name].loc[train_ids], y_train)
         positive = list(pipeline.classes_).index(1)
@@ -169,7 +186,7 @@ def predict_test(features, train_ids, test_ids, y_train, jobs):
         assert saved["RecordID"].tolist() == test_ids.tolist()
         np.testing.assert_allclose(saved["predicted_probability"], probability, rtol=1e-12, atol=1e-12)
         joblib.dump(pipeline, model_dir / f"rf_{name}.joblib")
-        checks.append({"model": f"rf_{name}", "n_train": len(train_ids), "n_test": len(saved),
+        checks.append({"feature_version": FEATURE_VERSION, "model": f"rf_{name}", "n_train": len(train_ids), "n_test": len(saved),
                        "n_input_features": features[name].shape[1],
                        "n_model_features": pipeline.named_steps["model"].n_features_in_,
                        "prediction_sha256": hashlib.sha256(path.read_bytes()).hexdigest()})

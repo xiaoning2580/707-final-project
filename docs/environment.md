@@ -38,6 +38,7 @@ For example:
 ```bash
 python scripts/06_build_features.py
 python scripts/07_training_eda.py
+python scripts/13_add_common_covariates.py
 python scripts/11_train_regularized_models.py --tune-lasso
 python scripts/11_train_regularized_models.py --predict-test
 python scripts/12_train_random_forests.py --mode all --jobs 4
