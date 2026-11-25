@@ -69,6 +69,12 @@ We will examine the data distributions and missingness, then compare the three f
 
 We use the shared 80/20 training/test split and five training folds, both stratified by in-hospital death. Imputation and standardization will be fitted using training data only. Model evaluation will include AUROC, calibration plots, and Brier scores. We will discuss limitations, including whether differences in hospital measurement practices could affect model performance.
 
+## Final report
+
+[Final Project Report (PDF)](report/707_Final_Project_Report.pdf)
+
+Evaluation methods and reproduction instructions are included in Appendix A of the report. Updated tables and figures are available in [results/evaluation](results/evaluation/).
+
 ## Proposal
 
 The project proposal is available in [707-proposal.md](707-proposal.md).
