@@ -6,9 +6,9 @@ Our project will examine how much information about in-hospital mortality comes 
 
 Using the first 48 hours of ICU data, we will compare three feature sets:
 
-1. Measurement values only.
-2. Measurement counts and missingness indicators only.
-3. Measurement values, counts, and missingness indicators together.
+1. Age, Gender, and ICUType plus measurement values.
+2. The same common covariates plus measurement counts and missingness indicators.
+3. The same common covariates plus both measurement feature types.
 
 We will evaluate discrimination and calibration and discuss whether differences in hospital measurement practices could affect model performance.
 
@@ -31,11 +31,33 @@ We will use Set A of the PhysioNet/Computing in Cardiology Challenge 2012 datase
 - Data license: Open Data Commons Attribution License v1.0 (ODC-BY).
 - Required files: `set-a.tar.gz` and `Outcomes-a.txt`, available from the original source.
 
+## Project Setup and Structure
+
+Use Python **3.11.18** and the single [requirements.txt](requirements.txt).
+Follow [the shared environment guide](docs/environment.md) to create and
+activate the environment before running any project script.
+
+```text
+requirements.txt     Shared package versions for the project
+scripts/             Data preparation, EDA, and model code
+docs/                Environment guide and methods for each part
+results/             Aggregate tables and figures tracked in Git
+data/                Local raw/processed data, models, and predictions (ignored)
+```
+
+Analysis guides:
+
+- [Data preparation and EDA](docs/data_preparation.md)
+- [Data inputs and handoff](docs/data_usage.md)
+- [Revised V2 modeling inputs](docs/modeling_handoff_v2.md)
+- [Age baseline and LASSO](docs/regularized_models.md)
+- [Random forests](docs/random_forests.md)
+
 ## Data Access
 
 From the repository root, run:
 
-    python3 scripts/download_data.py
+    python scripts/download_data.py
 
 The script downloads the original files from PhysioNet and extracts the measurement records into `data/set-a/`. The outcome file is saved as `data/Outcomes-a.txt`.
 
@@ -45,7 +67,7 @@ The `data/` directory is excluded from version control through `.gitignore`. Eac
 
 We will examine the data distributions and missingness, then compare the three feature sets using LASSO logistic regression and a random forest. An age-only logistic regression model will serve as a simple baseline.
 
-We will use a stratified training/test split and cross-validation within the training set. Imputation and standardization will be fitted using training data only. Model evaluation will include AUROC, calibration plots, and Brier scores. We will discuss limitations, including whether differences in hospital measurement practices could affect model performance.
+We use the shared 80/20 training/test split and five training folds, both stratified by in-hospital death. Imputation and standardization will be fitted using training data only. Model evaluation will include AUROC, calibration plots, and Brier scores. We will discuss limitations, including whether differences in hospital measurement practices could affect model performance.
 
 ## Proposal
 
@@ -56,9 +78,3 @@ The project proposal is available in [707-proposal.md](707-proposal.md).
 Silva I, Moody G, Scott DJ, Celi LA, Mark RG. Predicting In-Hospital Mortality of Patients in ICU: The PhysioNet/Computing in Cardiology Challenge 2012. *Computing in Cardiology*. 2012;39:245–248.
 
 Pollard T, Moody B, Lehman L, et al. PhysioNet as a global platform for biomedical research. *Nature Health*. 2026;1:792–795. https://doi.org/10.1038/s44360-026-00096-z
-
-## Data Preparation and Usage
-
-- [Data preparation and exploratory analysis](docs/data_preparation.md)
-- [Data reproduction and modeling handoff](docs/data_usage.md)
-- [Revised modeling inputs and handoff](docs/modeling_handoff_v2.md)

@@ -1,0 +1,66 @@
+{
+  "feature_version": "COMMON_COVARIATES_V2",
+  "preprocessing": {
+    "numeric": "training-fold median, no added indicators",
+    "categorical": "Missing label; one-hot, drop=None, handle_unknown=ignore",
+    "constant_filter": true,
+    "standardization": false
+  },
+  "selected_parameters": {
+    "values": {
+      "model__max_depth": null,
+      "model__max_features": "sqrt",
+      "model__min_samples_leaf": 10
+    },
+    "patterns": {
+      "model__max_depth": 8,
+      "model__max_features": 0.5,
+      "model__min_samples_leaf": 2
+    },
+    "combined": {
+      "model__max_depth": null,
+      "model__max_features": "sqrt",
+      "model__min_samples_leaf": 10
+    }
+  },
+  "fixed_parameters": {
+    "n_estimators": 300,
+    "random_state": 707,
+    "class_weight": null
+  },
+  "selection": "Highest mean shared-five-fold AUROC; first grid candidate in an exact tie.",
+  "grid": {
+    "model__max_depth": [
+      8,
+      null
+    ],
+    "model__min_samples_leaf": [
+      10,
+      2
+    ],
+    "model__max_features": [
+      "sqrt",
+      0.5
+    ]
+  },
+  "input_sha256": {
+    "split_assignments.csv": "96ce6b957987236e0d3ede0e8b475190cc340b4762447e9d22906ad188110828",
+    "outcomes.csv": "1933dab0774491a99346767f3140dab27034cd9ebb606e9bd4fe8c926f40cd54",
+    "feature_sets.json": "0ab1b4da4daa145df5598fab99ce559e058ace2d3adf90d4631e346e551ac61b",
+    "preparation_manifest.json": "6dffd4856cdc5d46b9ec40a06326f4e4a00cf0abdefd3b42164f5358d43781e5",
+    "features_values.csv": "d17428438232e526636b55cbf6f0f031f380ba69172654b247d6ab5b840e0da5",
+    "features_patterns.csv": "3f915368e334fc424e930a45dfb59fd5d47f11c63ca55ae67763b1d344b42c0c",
+    "features_combined.csv": "5b33b511eebe436822a9ec941d82386aa3866eea1181c66095b6e8cc98a32e5f"
+  },
+  "environment": {
+    "python": "3.11.18",
+    "platform": "macOS-26.5-arm64-arm-64bit",
+    "numpy": "2.4.6",
+    "pandas": "3.1.0",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.1",
+    "matplotlib": "3.11.2",
+    "joblib": "1.6.0",
+    "threadpoolctl": "3.7.0"
+  }
+}

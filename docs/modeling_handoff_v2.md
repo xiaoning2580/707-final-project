@@ -151,8 +151,8 @@ directory. Archive that directory before intentionally rebuilding it.
 After rebuilding the source features, rebuild the revised directory
 before fitting models.
 
-Script 12 is a backup and pre-update inspection utility, not a required
-step for routine reproduction.
+`scripts/12_prepare_covariate_update.py` is a backup and pre-update
+inspection utility, not a required step for routine reproduction.
 
 ## Validation Files
 
